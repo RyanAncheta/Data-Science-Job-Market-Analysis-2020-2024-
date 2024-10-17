@@ -1,0 +1,945 @@
+---
+title: "ITE5424 - Big Data 2"
+subtitle: 'Project 1'
+authors: "Ryan Phil Ancheta, Adekunle Omonihi, Jercy Tze Sie Tiong"
+date: "2024-10-02"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+#summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+#plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r}
+#install.packages("httr")
+#install.packages("jsonlite")
+#install.packages("data.table")
+#install.packages("ggplot2")
+#install.packages("fastDummies")
+#install.packages("corrplot")
+#install.packages("mltools", dependencies = TRUE)
+#install.packages("maps")
+#install.packages("countrycode")
+#install.packages("rnaturalearth")
+#install.packages("rnaturalearthdata")
+#install.packages("ggrepel")
+
+```
+
+
+```{r}
+library(httr)
+library(jsonlite)
+library(data.table)
+library(ggplot2)
+library(fastDummies)
+library(corrplot)
+library(mltools)
+library(scales)
+library(dplyr)
+library(tidyr)
+library(maps)
+library(countrycode)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+library(caret)
+library(plotly)
+library(patchwork)
+library(cluster)
+
+```
+
+
+```{r include=TRUE, echo=TRUE}
+
+url <- "https://www.kaggle.com/api/v1/datasets/download/saurabhbadole/latest-data-science-job-salaries-2024"
+resp <- GET(url, write_disk("data_science_salaries_2024.zip", overwrite = TRUE))
+
+# Check if the download was successful
+if (resp$status_code == 200) {
+  print("Download successful")
+} else {
+  print("Download failed")
+}
+```
+
+
+```{r}
+#unzip("data_science_salaries_2024.zip", exdir = "data")
+data <- fread("data/DataScience_salaries_2024.csv")
+```
+
+Preview of our Dataset
+```{r}
+data
+```
+
+Checking for data cleanliness
+
+```{r}
+null_counts <- sapply(data, function(x) sum(is.na(x)))
+print("Null Values per Column:")
+print(null_counts)
+```
+
+Summary statistics of the Dataset
+
+```{r}
+summary(data)
+```
+Computing the frequencies of our Categorical columns to visualize the distribution of the data for every categorical column
+```{r}
+calculate_top_frequencies_df <- function(data, column_name, top_n_value = 10) {
+  frequency_table <- data %>%
+    group_by(!!sym(column_name)) %>%
+    summarise(Count = n()) %>%
+    mutate(Proportion = Count / sum(Count),
+           Variable = column_name) %>%
+    rename(Category = !!sym(column_name)) %>%
+    mutate(Category = as.character(Category)) %>%
+    top_n(top_n_value, Count)  # Select the top N values
+  
+  return(frequency_table)
+}
+
+# Calculate top frequencies for each variable
+experience_freq_df <- calculate_top_frequencies_df(data, "experience_level")
+employment_type_freq_df <- calculate_top_frequencies_df(data, "employment_type")
+job_title_freq_df <- calculate_top_frequencies_df(data, "job_title")
+residence_freq_df <- calculate_top_frequencies_df(data, "employee_residence")
+location_freq_df <- calculate_top_frequencies_df(data, "company_location")
+remote_freq_df <- calculate_top_frequencies_df(data, "remote_ratio")
+
+# Combine all into one long dataframe
+combined_freq_df <- bind_rows(
+  experience_freq_df,
+  employment_type_freq_df,
+  job_title_freq_df,
+  residence_freq_df,
+  location_freq_df,
+  remote_freq_df
+)
+
+# Plotting the top 10 categories for each variable
+ggplot(combined_freq_df, aes(x = reorder(Category, -Count), y = Count, fill = Variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ Variable, scales = "free", ncol = 2) +  # Free scale per facet
+  labs(title = "Top 10 Frequencies and Proportions of Different Variables",
+       x = "Category", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate x-axis labels
+  scale_fill_brewer(palette = "Set2")  # Nice color palette for categories
+
+```
+
+
+
+Average Salary in USD for every Year
+```{r}
+average_salary_by_year <- data[, .(Average_Salary_USD = mean(salary_in_usd)), by = work_year]
+
+# Plotting average salary vs. work year
+ggplot(average_salary_by_year, aes(x = work_year, y = Average_Salary_USD)) +
+  geom_line(group=1, color="blue") +  # Line plot
+  geom_point(color="red", size=3) +  # Add points
+  ggtitle("Average Salary vs. Work Year") +
+  xlab("Work Year") +
+  ylab("Average Salary in USD") +
+  theme_minimal()
+```
+
+
+Encoding the Categorical collumns as preparation for Correlation analysis
+```{r}
+  data_encoded <- data[, lapply(.SD, function(x) {
+    if (is.factor(x) || is.character(x)) as.integer(as.factor(x)) else x
+})]
+str(data_encoded)
+```
+
+```{r}
+print(head(data_encoded))
+```
+
+Correalation Matrix for all of the collumns
+```{r}
+cor_matrix <- cor(data_encoded, use = "complete.obs")
+corrplot(cor_matrix, method = "circle")
+```
+Correlation Matrix Analysis:
+Salary vs. Salary in USD: Strong positive correlation (as expected since these represent similar values in different currencies).
+Experience Level vs. Salary in USD: Moderate positive correlation, indicating higher experience levels tend to correlate with higher salaries.
+Company Size vs. Salary: Moderate positive correlation, suggesting larger companies tend to offer higher salaries.
+Remote Ratio vs. Salary: Weak correlation, indicating remote work ratio doesn’t significantly affect salary in this dataset.
+Work Year and Location-related Variables: Little to no correlation with salary, suggesting these factors do not strongly influence salary levels.
+
+
+
+
+Boxplot of Key Features:
+```{r}
+plot_work_year <- ggplot(data_encoded, aes(x = "", y = work_year)) +
+  geom_boxplot(fill = "lightblue", color = "black") +
+  labs(title = "Work Year", y = "Value") +
+  theme_minimal()
+
+plot_experience_level <- ggplot(data_encoded, aes(x = "", y = experience_level)) +
+  geom_boxplot(fill = "lightgreen", color = "black") +
+  labs(title = "Experience Level", y = "Value") +
+  theme_minimal()
+
+plot_employment_type <- ggplot(data_encoded, aes(x = "", y = employment_type)) +
+  geom_boxplot(fill = "lightcoral", color = "black") +
+  labs(title = "Employment Type", y = "Value") +
+  theme_minimal()
+
+
+plot_salary <- ggplot(data_encoded, aes(x = "", y = salary)) +
+  geom_boxplot(fill = "lightyellow", color = "black") +
+  scale_y_continuous(labels = comma) +  # Format y-axis values
+  labs(title = "Salary", y = "Value") +
+  theme_minimal()
+
+
+plot_salary_usd <- ggplot(data_encoded, aes(x = "", y = salary_in_usd)) +
+  geom_boxplot(fill = "lightgray", color = "black") +
+  scale_y_continuous(labels = comma) +  # Corrected to y-axis
+  labs(title = "Salary in USD", y = "Value") +
+  theme_minimal()
+
+
+plot_remote_ratio <- ggplot(data_encoded, aes(x = "", y = remote_ratio)) +
+  geom_boxplot(fill = "lightsteelblue", color = "black") +
+  labs(title = "Remote Ratio", y = "Value") +
+  theme_minimal()
+
+
+plot_company_size <- ggplot(data_encoded, aes(x = "", y = company_size)) +
+  geom_boxplot(fill = "lightsalmon", color = "black") +
+  labs(title = "Company Size", y = "Value") +
+  theme_minimal()
+
+# Combine all individual plots into a single layout
+combined_plot <- plot_work_year + plot_experience_level + plot_employment_type +
+                 plot_salary +
+                 plot_salary_usd + plot_remote_ratio +
+                 plot_company_size +
+                 plot_layout(ncol = 5)  # 3 columns, automatically adjusts to fit 11 plots
+
+# Display the combined plot
+combined_plot
+
+
+```
+
+
+Map Plot for Concentration of Company Locations in Our Dataset
+```{r}
+location_data <- data %>%
+  mutate(country_name = ifelse(company_location == "US", "USA", 
+                               countrycode(company_location, origin = 'iso2c', destination = 'country.name'))) %>%
+  group_by(country_name) %>%
+  summarise(count = n()) %>%
+  filter(!is.na(country_name))  # Remove any rows with NA values
+
+# Join with world map data
+world_map <- map_data("world")
+
+# Merge the world map data with your company location data
+map_data_with_companies <- world_map %>%
+  left_join(location_data, by = c("region" = "country_name"))
+
+# Plot the map with concentration of company locations
+ggplot(map_data_with_companies, aes(long, lat, group = group)) +
+  geom_polygon(aes(fill = count), color = "white") +  # Fill the regions based on company counts
+  scale_fill_viridis_c(option = "C", na.value = "gray90", name = "Company Count") +  # Use viridis color scale
+  labs(title = "Concentration of Company Locations Worldwide",
+       x = "Longitude",
+       y = "Latitude") +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "lightblue"),  # Set ocean color
+        panel.grid = element_blank())
+
+```
+
+
+
+1. Chronological Changes in the Post-COVID Era: How has the data science job market evolved chronologically since the post-COVID period?
+```{r}
+job_trend <- data %>%
+  group_by(work_year) %>%
+  summarise(job_count = n())
+```
+
+```{r}
+ggplot(job_trend, aes(x = work_year, y = job_count)) +
+  geom_line(color = "blue") +
+  geom_point() +
+  labs(title = "Chronological Changes in Data Science Job Postings",
+       x = "Year",
+       y = "Number of Job Postings") +
+  theme_minimal()
+
+```
+The line plot illustrates the chronological changes in data science job postings from 2020 to 2024. The number of job postings remained relatively stable between 2020 and 2021, followed by a significant increase starting in 2022. The peak occurs in 2023, where the number of job postings reached its highest point, but there is a notable drop in 2024. This pattern suggests a rapid rise in demand for data science roles, followed by a contraction in 2024.
+
+Let’s dig deeper into the specific job roles that contributed to the sharp upward trend in 2023.
+
+
+```{r}
+job_trend_by_title <- data %>%
+  group_by(work_year, job_title) %>%
+  summarise(job_count = n()) %>%
+  filter(work_year %in% c(2022, 2023, 2024))  # Focus only on 2022, 2023, and 2024
+
+# Step 2: Spread the data so that we can calculate the difference between 2022 and 2023
+job_trend_wide <- job_trend_by_title %>%
+  spread(work_year, job_count, fill = 0) %>%
+  rename(job_count_2022 = `2022`, job_count_2023 = `2023`, job_count_2024 = `2024`)
+
+# Step 3: Calculate the increase in job postings from 2022 to 2023
+job_trend_wide <- job_trend_wide %>%
+  mutate(increase_2023 = job_count_2023 - job_count_2022) %>%
+  filter(increase_2023 > 0)  # Focus on jobs that had an increase in 2023
+
+# Step 4: Visualize the job titles with the highest increase from 2022 to 2023
+top_increase_jobs_2023 <- job_trend_wide %>%
+  arrange(desc(increase_2023)) %>%
+  head(10)  # Get top 10 jobs with the highest increase
+
+
+```
+
+```{r}
+ggplot(top_increase_jobs_2023, aes(x = reorder(job_title, -increase_2023), y = increase_2023)) +
+  geom_bar(stat = "identity", fill = "green") +
+  coord_flip() +
+  labs(title = "Top 10 Job Titles with Highest Increase in Job Postings (2022 vs 2023)",
+       x = "Job Title",
+       y = "Increase in Job Postings") +
+  theme_minimal()
+```
+
+
+```{r}
+job_trend_wide <- job_trend_wide %>%
+  mutate(change_2024 = job_count_2024 - job_count_2023)
+
+# Step 6: Visualize the change in 2024 for the jobs that increased in 2023
+ggplot(job_trend_wide %>% filter(job_title %in% top_increase_jobs_2023$job_title),
+       aes(x = reorder(job_title, -change_2024), y = change_2024, fill = change_2024 > 0)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("red", "green"), labels = c("Decrease", "Increase")) +
+  coord_flip() +
+  labs(title = "Change in Job Postings for Top 2023 Jobs (2023 vs 2024)",
+       x = "Job Title",
+       y = "Change in Job Postings",
+       fill = "Change Status") +
+  theme_minimal()
+
+
+
+```
+The bar plot above shows the decrease in job postings for the top data science job roles between 2023 and 2024. Data Engineer, Data Scientist, and Data Analyst experienced the most significant declines in job postings, with Data Engineer seeing the largest drop of nearly 900 job postings. Roles like Machine Learning Engineer and Applied Scientist also saw notable decreases, though not as steep as the top three roles. This suggests that there was a contraction in demand for these technical roles in 2024 compared to the previous year.
+
+Now, let’s combine this plot with the plot showing the increase in job postings between 2022 and 2023 for a better visualization and deeper understanding of the trends across these years.
+
+```{r}
+# Step 1: Filter the data to only include 2023 and 2024
+job_trend_long <- job_trend_wide %>%
+  filter(job_title %in% top_increase_jobs_2023$job_title) %>%
+  gather(key = "year", value = "job_count", job_count_2023, job_count_2024)  # Only keep 2023 and 2024
+
+# Step 2: Create a combined plot for job postings in 2023 and 2024
+ggplot(job_trend_long, aes(x = reorder(job_title, -job_count), y = job_count, fill = year)) +
+  geom_bar(stat = "identity", position = "dodge", aes(fill = year)) +
+  geom_text(aes(label = job_count), position = position_dodge(0.9), vjust = -0.3, size = 3.5) +
+  scale_fill_manual(values = c("job_count_2023" = "green", "job_count_2024" = "red"),
+                    labels = c("2023", "2024")) +
+  coord_flip() +
+  labs(title = "Comparison of Job Postings for Top 10 Jobs (2023 vs 2024)",
+       subtitle = "Green: Increase in 2023 | Red: Decrease in 2024",
+       x = "Job Title",
+       y = "Number of Job Postings",
+       fill = "Year") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),  # Center the title
+        plot.subtitle = element_text(hjust = 0.5)) 
+
+
+```
+The data science job market has seen significant fluctuations in job postings since the post-COVID period. Between 2022 and 2023, there was a sharp rise in demand for roles such as Data Engineer, Data Scientist, and Data Analyst, with these positions seeing the largest increases in job postings. However, this upward trend was followed by a notable contraction in 2024, as reflected in the marked decrease in job postings for the same roles. Overall, while 2023 represented a peak in hiring, 2024 experienced a significant downturn, suggesting that the market may have temporarily saturated or corrected after the initial post-COVID boom. This indicates that the data science job market is evolving dynamically, responding to changing business needs and economic factors.
+
+
+3. Regional Opportunities: Which locations currently offer the best opportunities for data scientists? What are the regional trends in the job market?
+
+```{r}
+regional_salaries_by_company <- data %>%
+  group_by(company_location) %>%
+  summarise(avg_salary_usd = mean(salary_in_usd, na.rm = TRUE)) %>%
+  arrange(desc(avg_salary_usd))
+
+```
+
+
+```{r}
+ggplot(regional_salaries_by_company, aes(x = reorder(company_location, -avg_salary_usd), y = avg_salary_usd)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  coord_flip() + scale_y_continuous(labels = comma) +
+  labs(title = "Average Salaries for Data Science Jobs by Company Location",
+       x = "Company Location",
+       y = "Average Salary (USD)") + 
+theme_minimal() +
+theme(axis.text.y = element_text(size = 5, hjust = 1))
+
+```
+The plot above show the Average Salaries in USD for Data Science jobs by the location of the Company but this is not very telling because we have 77 different region lets zoom in to extract the Top 8 regions that has the highest average salary in USD for our analysis
+```{r}
+top_5_regions <- head(regional_salaries_by_company, 10)
+
+ggplot(top_5_regions, aes(x = reorder(company_location, -avg_salary_usd), y = avg_salary_usd)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +  # Format the y-axis labels
+  labs(title = "Top 8 Regions with Highest Average Salaries for Data Science Jobs",
+       x = "Company Location",
+       y = "Average Salary (USD)")
+```
+This chart highlights the regions offering the best opportunities for data scientists in terms of average salary. Qatar (QA) leads with the highest average salary, followed closely by Israel (IL) and Puerto Rico (PR), which indicates these regions are strong contenders for data scientists seeking lucrative positions. The United States (US) and New Zealand (NZ) also rank high, making them attractive markets for data professionals. Canada (CA), Egypt (EG), and Saudi Arabia (SA) also feature prominently, reflecting growing demand and compensation for data science roles in these areas.
+
+Now, let's drill down to see what the top 5 job roles are in the top 8 regions with the highest average salary.
+
+
+
+```{r}
+top_8_regions <- c("QA", "IL", "PR", "US", "NZ", "CA", "EG", "SA")
+
+
+top_5_data <- data %>%
+  filter(company_location %in% top_8_regions)
+
+
+top_jobs_by_region <- top_5_data %>%
+  group_by(company_location, job_title) %>%
+  summarise(employee_count = n()) %>%
+  arrange(company_location, desc(employee_count))
+
+top_5_jobs_per_region <- top_jobs_by_region %>%
+  group_by(company_location) %>%
+  slice_max(employee_count, n = 5) 
+```
+
+
+```{r}
+ggplot(top_5_jobs_per_region, aes(x = reorder(job_title, -employee_count), y = employee_count, fill = company_location)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ company_location, scales = "free") +
+  coord_flip() +
+  labs(title = "Top 5 Jobs with Highest Employees in Each Top 8 Region",
+       x = "Job Title",
+       y = "Employee Count")
+```
+From the visualization, it is clear that the United States (US), Canada (CA), and New Zealand (NZ) offer the best opportunities for data scientists, with high employee counts in roles such as Data Scientist, Data Engineer, and Machine Learning Engineer. The US particularly stands out with a significant number of employees in these roles, while Canada and New Zealand show strong opportunities as well. In smaller regions like Puerto Rico (PR), Egypt (EG), and Qatar (QA), specific roles such as AI Engineer and Data Scientist are prominent but with fewer employees, indicating a more specialized demand.
+
+However, this doesn’t fully tell us about the most recent trend in the data science job market. Let's extract the data from the years 2023 and 2024 to see if these trends are still valid and to uncover any recent shifts in the market.
+
+
+```{r}
+data_2023_2024 <- data %>%
+  filter(work_year %in% c(2023, 2024))
+
+top_5_data_2023_2024 <- data_2023_2024 %>%
+  filter(company_location %in% top_8_regions)
+
+top_jobs_by_region_year <- top_5_data_2023_2024 %>%
+  group_by(company_location, job_title, work_year) %>%
+  summarise(employee_count = n()) %>%
+  arrange(company_location, work_year, desc(employee_count))
+
+
+top_5_jobs_per_region_year <- top_jobs_by_region_year %>%
+  group_by(company_location, work_year) %>%
+  slice_max(employee_count, n = 5)  
+
+```
+
+
+
+```{r}
+ggplot(top_5_jobs_per_region_year, aes(x = reorder(job_title, -employee_count), y = employee_count, fill = company_location)) +
+  geom_bar(stat = "identity") +
+  facet_grid(work_year ~ company_location, scales = "free") +
+  coord_flip() +
+  labs(title = "Top 5 Jobs with Highest Employees in Each Top 5 Region (2023 & 2024)",
+       x = "Job Title",
+       y = "Employee Count")
+```
+The recent data shows that the United States (US) and Canada (CA) continue to offer the best opportunities for data scientists, with high employee counts in key roles such as Data Scientist, Data Engineer, and Machine Learning Engineer. The US, in particular, dominates the market with a substantial number of employees across these roles in both 2023 and 2024. In contrast, regions like Egypt (EG) and New Zealand (NZ) show a more specialized demand for roles such as Machine Learning Scientist and Data Architect, though with significantly fewer employees.
+
+We noticed that although other regions offer high salaries, this graph highlights that the US and Canada have the largest representation in our dataset. Let's focus on these regions to ensure a more comprehensive and unbiased analysis of the current data science job market trends.
+
+```{r}
+us_ca_data <- data_2023_2024 %>%
+  filter(company_location %in% c("US", "CA"))
+
+top_jobs_by_employee_count <- us_ca_data %>%
+  group_by(company_location, job_title, work_year) %>%
+  summarise(employee_count = n(), avg_salary_usd = mean(salary_in_usd, na.rm = TRUE)) %>%
+  arrange(company_location, work_year, desc(employee_count))
+
+top_5_jobs_per_region <- top_jobs_by_employee_count %>%
+  group_by(company_location, work_year) %>%
+  slice_max(employee_count, n = 5)
+```
+
+
+```{r}
+ggplot(top_5_jobs_per_region, aes(x = reorder(job_title, -avg_salary_usd), y = avg_salary_usd, fill = company_location)) +
+  geom_bar(stat = "identity") +
+  facet_grid(work_year ~ company_location, scales = "free") +
+  coord_flip() +
+  labs(title = "Top 5 Jobs in US and CA with Highest Average Salaries (2023 & 2024)",
+       x = "Job Title",
+       y = "Average Salary (USD)")
+
+```
+The recent data shows that the United States and Canada provide some of the best opportunities for data scientists, as reflected by the large number of job postings and high salaries for key roles such as Data Analyst, Data Engineer, and Data Scientist. The trends indicate that the US leads in employee count across a range of positions, especially in data-heavy roles, with competitive salaries in both 2023 and 2024. However, regions such as Qatar, Israel, and Puerto Rico offer higher average salaries for specialized and experienced roles, like AI Engineers and Machine Learning Engineers, although with fewer job postings. To better analyze the opportunities in these regions, collecting more data would be essential to understand their potential fully.
+
+
+
+
+2. Current Trends in Work Nature: What are the current trends in the nature of work within the data science industry? Specifically, how do experience level, employment type, and work delivery type (remote vs. in-person) affect salaries today?
+```{r}
+salary_by_experience <- data %>%
+  group_by(experience_level) %>%
+  summarise(avg_salary_usd = mean(salary_in_usd, na.rm = TRUE)) %>%
+  arrange(desc(avg_salary_usd))
+
+print(salary_by_experience)
+
+ggplot(salary_by_experience, aes(x = experience_level, y = avg_salary_usd, fill = experience_level)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Average Salary by Experience Level in Data Science",
+       x = "Experience Level",
+       y = "Average Salary (USD)")
+```
+The graph highlights the impact of experience level on average salary in the data science industry. Entry-level (EN) professionals tend to earn the lowest average salary, which is under $100,000, while experienced (EX) professionals earn significantly more, exceeding $200,000 on average. Senior-level (SE) professionals also command high salaries, closely following the experienced category, while mid-level (MI) professionals fall somewhere in between. This data emphasizes the increasing value of experience in boosting earnings within the industry.
+
+Next, let’s explore the average salary by employment type to understand how job contracts affect compensation.
+
+```{r}
+salary_by_employment_type <- data %>%
+  group_by(employment_type) %>%
+  summarise(avg_salary_usd = mean(salary_in_usd, na.rm = TRUE)) %>%
+  arrange(desc(avg_salary_usd))
+
+print(salary_by_employment_type)
+
+ggplot(salary_by_employment_type, aes(x = employment_type, y = avg_salary_usd, fill = employment_type)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Average Salary by Employment Type in Data Science",
+       x = "Employment Type",
+       y = "Average Salary (USD)")
+```
+The graph illustrates how different employment types affect the average salary in the data science industry. Full-time (FT) employees command the highest average salary, surpassing $150,000, followed by contract (CT) employees, who also earn over $100,000. Part-time (PT) roles, while still well-paying, show lower average salaries compared to full-time and contract positions, with freelance (FL) workers earning the lowest among the categories. This highlights a clear distinction in compensation based on employment type, with full-time roles being the most financially rewarding.
+
+Next, let’s see how work delivery type (remote vs. in-person) impacts the average salary.
+```{r}
+salary_by_remote_ratio <- data %>%
+  group_by(remote_ratio) %>%
+  summarise(avg_salary_usd = median(salary_in_usd, na.rm = TRUE)) %>%
+  arrange(desc(avg_salary_usd))
+
+print(salary_by_remote_ratio)
+
+ggplot(salary_by_remote_ratio, aes(x = factor(remote_ratio), y = avg_salary_usd, fill = factor(remote_ratio))) +
+  geom_bar(stat = "identity") +
+  labs(title = "Average Salary by Work Delivery Type (Remote vs In-Person)",
+       x = "Remote Ratio",
+       y = "Average Salary (USD)")
+```
+The graph shows how work delivery type, based on the remote ratio, affects the average salary in data science. Fully in-person roles (0% remote) command high average salaries, nearing $150,000. Fully remote roles (100% remote) also offer competitive salaries, slightly trailing in-person roles, while hybrid roles (50% remote) tend to have lower average salaries. This suggests that fully remote or in-person roles are valued higher in the current data science job market compared to hybrid roles.
+
+For better visualization, let's now combine the employment type and work delivery type to explore how both factors affect the average salary. Additionally, to dig deeper, we can examine what types of employment are most common in hybrid roles. This will help explain why hybrid roles tend to have lower salaries compared to fully remote (WFM) and in-office (WFO) employees. It’s possible that hybrid roles may be more prevalent in certain employment types that traditionally offer lower compensation, contributing to the overall lower average salary observed for hybrid workers.
+
+```{r}
+
+salary_by_remote_and_employment <- data %>%
+  group_by(remote_ratio, employment_type) %>%
+  summarise(
+    avg_salary_usd = mean(salary_in_usd, na.rm = TRUE),
+    employee_count = n()  # Calculate the count of employees
+  )
+
+ggplot(salary_by_remote_and_employment, aes(x = factor(remote_ratio), y = avg_salary_usd, fill = employment_type)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_text(aes(label = employee_count), vjust = -0.5, position = position_dodge(0.9)) +  # Add employee count labels
+  labs(title = "Average Salary by Remote Ratio and Employment Type",
+       x = "Remote Ratio",
+       y = "Average Salary (USD)",
+       fill = "Employment Type") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::comma)  # Format y-axis labels for readability
+
+```
+The graph above shows that Full Time Employees in fully remote work condition offers the highest average salary followed by the full time employees fully working in office. We can also see that contractual workers working in office has much higher avg salary compared to contractual worker working remotely this suggest that company offers higher salary for contractual employees that can work in person. We can also notice that PT employees working remotely significantly has higher avg salary compared to pt workers working in office this may suggest that company offer more working hours for remote part time employees compared to pt employees working in office. Lastly, the FL employees working in office has a higher avg salary compared to FL employees working fully remote this might suggest that companies might prefer to offer higher compensation to freelance (FL) workers who are available in person due to the potential for more direct oversight and collaboration. Additionally, it could indicate that in-office freelance roles might require more specialized skills or be for short-term high-demand projects that command higher pay. Freelancers working fully remote, on the other hand, might be offered lower pay due to the perceived flexibility of their work arrangement or the nature of remote assignments which may not require as much hands-on or immediate involvement.
+
+On the other hand, hybrid roles show a significant difference in average salary across all employment types, which doesn't align with expectations. This suggests that the main factor contributing to lower average salaries in hybrid roles might be tied to experience level. To uncover the root cause, let's explore the impact of experience level and remote ratio on average salary, which may explain the lower salaries seen in hybrid roles.
+
+
+
+```{r}
+salary_by_remote_and_experience <- data %>%
+  group_by(remote_ratio, experience_level) %>%
+  summarise(
+    avg_salary_usd = mean(salary_in_usd, na.rm = TRUE),
+    employee_count = n()
+  )
+
+ggplot(salary_by_remote_and_experience, aes(x = factor(remote_ratio), y = avg_salary_usd, fill = experience_level)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_text(aes(label = employee_count), vjust = -0.5, position = position_dodge(0.9)) +  # Add count labels
+  labs(title = "Average Salary by Remote Ratio and Experience Level",
+       x = "Remote Ratio",
+       y = "Average Salary (USD)",
+       fill = "Experience Level") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::comma)
+```
+The graph above reveals several insights about how experience level and remote work affect salaries. Executive-level employees working fully in person earn significantly more than their remote counterparts, which suggests that companies value their in-person presence for leadership and team guidance. On the other hand, senior-level employees show almost no difference in salary whether they work remotely or in person, indicating that companies compensate these employees based more on experience than work location. Mid-level employees also show little variation in salary across work settings. Surprisingly, entry-level employees working fully remotely earn more than those working in person, reflecting the growing acceptance of remote work environments.
+
+However, hybrid roles still display a significant difference in salary, likely due to the global distribution of participants, which might influence salary scales in hybrid setups.
+
+```{r}
+salary_by_remote_and_experience_us <- data %>%
+  filter(company_location == "US") %>%  # Filter to show only US data
+  group_by(remote_ratio, experience_level) %>%
+  summarise(
+    avg_salary_usd = mean(salary_in_usd, na.rm = TRUE),
+    employee_count = n()
+  )
+
+ggplot(salary_by_remote_and_experience_us, aes(x = factor(remote_ratio), y = avg_salary_usd, fill = experience_level)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_text(aes(label = employee_count), vjust = -0.5, position = position_dodge(0.9)) +  # Add count labels
+  labs(title = "Average Salary by Remote Ratio and Experience Level (US)",
+       x = "Remote Ratio",
+       y = "Average Salary (USD)",
+       fill = "Experience Level") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::comma)
+```
+This graph is more telling and insightful. Here, we filter the data using US company location only to ensure an unbiased analysis since the US has the most participants in our dataset. The results show that experience level significantly affects salary, with executives (EX) earning the highest salaries, especially in fully in-person (0% remote ratio) and fully remote (100% remote ratio) roles. Senior employees (SE) also command high salaries, particularly in fully remote roles, further emphasizing the value companies place on experience in remote settings.
+
+For entry-level (EN) employees, it’s surprising to see higher salaries in fully remote roles compared to in-person or hybrid roles. This suggests that remote work is increasingly favored for new talent in the data science field. Mid-level (MI) employees show relatively consistent salaries across all remote ratios, suggesting that for this group, salary is less influenced by work delivery type and more by their growing experience.
+
+Overall, this analysis highlights that experience level is a dominant factor in determining salaries, with remote work being particularly rewarding for senior and executive roles. Hybrid roles, while still prevalent, may be attracting fewer high-level professionals, leading to slightly lower average salaries in this category.
+
+
+
+4. Market Prospects by Job Role: Which specific job roles within the data science industry have the most promising market prospects?
+```{r}
+job_role_summary <- data %>%
+  group_by(job_title) %>%
+  summarise(average_salary = mean(salary_in_usd, na.rm = TRUE)) %>%
+  arrange(desc(average_salary))
+
+# Select top 10 job roles by average salary
+top_job_roles <- head(job_role_summary, 10)
+
+# Plot the data
+ggplot(top_job_roles, aes(x = reorder(job_title, average_salary), y = average_salary)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() + scale_y_continuous(labels = scales::comma) +
+  labs(title = "Top 10 Job Roles by Average Salary in Data Science", 
+       x = "Job Role", 
+       y = "Average Salary (USD)") +
+  theme_minimal()
+```
+The graph shows that roles such as Analytics Engineering Manager, Data Science Tech Lead, and Head of Machine Learning offer the highest average salaries in the data science industry, suggesting these positions are highly specialized and in demand. Other roles like AI Architect and AWS Data Architect also rank highly in terms of salary, indicating a strong focus on machine learning and cloud-based data architecture. However, while this graph highlights the roles with the highest salaries, it does not provide a clear picture of which roles have the most job opportunities across the industry.
+
+In conclusion, this graph primarily showcases niche roles with high average salaries. To better understand which job roles have the most market prospects, we should standardize the job roles and analyze both the number of job opportunities and their respective average salaries.
+
+
+```{r}
+standardize_job_title <- function(job_title) {
+  job_title <- tolower(job_title)  # Convert to lowercase
+  if(grepl("data scientist|data science", job_title)) {
+    return("Data Scientist")
+  } else if(grepl("machine learning|ml", job_title)) {
+    return("Machine Learning Engineer")
+  } else if(grepl("data engineer|etl|cloud engineer", job_title)) {
+    return("Data Engineer")
+  } else if(grepl("business intelligence|bi", job_title)) {
+    return("Business Intelligence")
+  } else if(grepl("ai|artificial intelligence", job_title)) {
+    return("AI Engineer")
+  } else if(grepl("data analyst|analytics", job_title)) {
+    return("Data Analyst")
+  } else {
+    return("Other")
+  }
+}
+
+# Apply the standardization function to the job titles
+data$standardized_job_title <- sapply(data$job_title, standardize_job_title)
+
+# Group by standardized job title, calculate the average salary in USD, and count the number of occurrences of each job title
+job_analysis <- data %>%
+  group_by(standardized_job_title) %>%
+  summarise(avg_salary_usd = mean(salary_in_usd, na.rm = TRUE),
+            ncount = n()) %>%
+  arrange(desc(ncount))
+
+# Print job_analysis to check if ncount is properly calculated
+print(job_analysis)
+
+# Visualize the standardized job roles with their average salaries and counts
+ggplot(job_analysis, aes(x = ncount, y = reorder(standardized_job_title, ncount))) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = paste("Avg Salary: $", round(avg_salary_usd, 0))), 
+            hjust = ifelse(job_analysis$ncount < 1000, -0.1, 1.1),  # Ensure correct reference
+            color = "black", size = 4) +  # Adjust text size and hjust based on ncount
+  labs(title = "Job Roles with Highest Opportunities and Average Salary (USD)", 
+       x = "Number of Job Opportunities", y = "Job Role") +
+  xlim(0, max(job_analysis$ncount) * 1.1) +  # Add some padding to the x-axis
+  theme_minimal()
+```
+The graph indicates that Data Scientist, Data Engineer, and Data Analyst have the most job opportunities, indicating these roles are in high demand within the data science industry, with solid average salaries. Machine Learning Engineer and AI Engineer also show great earning potential but with fewer opportunities, making them more specialized. The category labeled as "Other" likely represents niche roles that offer high salaries but are less common in the broader job market.
+
+While this graph highlights roles with the most job openings and competitive salaries, the "Other" category represents niche positions. Let's dive deeper to see the experience levels required for these job roles and the company sizes offering them.
+
+
+```{r}
+job_requirements_by_company_size <- data %>%
+  group_by(standardized_job_title, experience_level, company_size) %>%
+  summarise(job_count = n()) %>%
+  arrange(desc(job_count))
+
+# Plot the experience level and company size for each standardized job role
+ggplot(job_requirements_by_company_size, aes(x = experience_level, y = job_count, fill = company_size)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ standardized_job_title) +
+  labs(title = "Experience Level and Company Size for Standardized Job Roles",
+       x = "Experience Level",
+       y = "Number of Job Opportunities",
+       fill = "Company Size") +
+  theme_minimal()
+```
+Based on the data, Data Scientist, Data Engineer, and Data Analyst roles exhibit the most promising market prospects in terms of job opportunities, with strong average salaries ranging from $116,000 to $155,000. These roles are highly demanded across large and medium companies, particularly for senior-level professionals, as indicated by the dominance of mid-level (MI) and senior-level (SE) positions. On the other hand, specialized roles like Machine Learning Engineer and AI Engineer offer high salaries, but they have fewer openings, indicating a more niche market. While salary is an important factor, these insights reveal that roles with the highest number of opportunities tend to be foundational to the industry. However, company size and experience level vary, showing that job opportunities are more abundant in medium and larger organizations.
+
+
+5. Ensuring Data Fairness and Unbiased: Given that the data is collected globally, how can we ensure that the dataset is fair and unbiased?
+```{r}
+remote_work_analysis <- data %>%
+  group_by(employee_residence, remote_ratio) %>%
+  summarise(job_count = n()) %>%
+  arrange(desc(job_count))
+
+# Plot remote work opportunities by region
+ggplot(remote_work_analysis, aes(x = reorder(employee_residence, job_count), y = job_count)) +
+  geom_point(aes(color = as.factor(remote_ratio)), size = 3) +
+  geom_segment(aes(x = reorder(employee_residence, job_count), xend = reorder(employee_residence, job_count), 
+                   y = 0, yend = job_count, color = as.factor(remote_ratio)), size = 1) +
+  coord_flip() +
+  facet_wrap(~remote_ratio, scales = "free_x") +
+  labs(title = "Remote Work Opportunities by Region and Remote Ratio",
+       x = "Region",
+       y = "Number of Jobs",
+       color = "Remote Ratio") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6, hjust = 1))
+```
+Earlier in our analysis, we encountered ambiguous results regarding the average salaries of employees in hybrid roles. This graph reveals that one factor contributing to this ambiguity is the uneven distribution of remote work opportunities across regions. Regions offering 100% remote work (blue) dominate certain areas, while no-remote work (red) is prevalent elsewhere, with hybrid roles (green) being rare and scattered. The inconsistency in how remote work is offered across regions likely leads to salary variations, as job markets and cost of living differ globally. To ensure fairness and unbiased analysis, we must consider these regional disparities when interpreting salary data.
+
+```{r}
+ggplot(regional_salaries_by_company, aes(x = reorder(company_location, -avg_salary_usd), y = avg_salary_usd)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  coord_flip() + scale_y_continuous(labels = comma) +
+  labs(title = "Average Salaries for Data Science Jobs by Company Location",
+       x = "Company Location",
+       y = "Average Salary (USD)") + 
+theme_minimal() +
+theme(axis.text.y = element_text(size = 5, hjust = 1))
+
+```
+This graph reveals that one factor contributing to this ambiguity is the uneven distribution of salary ranges across company locations. We see that most regions have lower to mid-range average salaries, while only a few regions offer significantly higher salaries (upwards of $200,000). This could contribute to the varying results in our salary analysis, as higher salaries tend to be concentrated in fewer regions, potentially skewing overall averages. Additionally, in our analysis, we focused on the U.S. and Canada (US and CA), as they had the highest distribution of data points, offering a more representative view of salary trends in these regions.
+
+This graph highlights the importance of considering regional salary disparities when analyzing global salary data to avoid skewed interpretations.
+
+
+```{r}
+ggplot(map_data_with_companies, aes(long, lat, group = group)) +
+  geom_polygon(aes(fill = count), color = "white") +  # Fill the regions based on company counts
+  scale_fill_viridis_c(option = "C", na.value = "gray90", name = "Company Count") +  # Use viridis color scale
+  labs(title = "Concentration of Company Locations Worldwide",
+       x = "Longitude",
+       y = "Latitude") +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "lightblue"),  # Set ocean color
+        panel.grid = element_blank())
+```
+As mentioned earlier, the USA has the highest concentration of data in our dataset, as visualized in this map. To maintain fairness and avoid bias in our analysis, we didn't limit ourselves to a global perspective; instead, we focused on drilling down into regions with the highest concentration of data points. This approach, specifically analyzing countries like the USA and Canada, allowed us to gain more accurate and relevant insights while avoiding ambiguous results that might arise from underrepresented regions. By balancing both global and region-specific analyses, we ensured that our findings reflect the dominant trends in the most relevant markets.
+
+```{r}
+ggplot(data, aes(x = salary_in_usd)) +
+  geom_histogram(binwidth = 10000, fill = "lightblue", color = "black") +
+  labs(title = "Salary Distribution in the Dataset",
+       x = "Salary (USD)",
+       y = "Frequency") + scale_x_continuous(labels = scales::comma) +
+  theme_minimal()
+
+
+```
+The salary distribution graph shows that most data points fall between $150,000 and $180,000, with very few outliers earning higher salaries above $200,000. Given this concentration of salaries within a narrow range, the overall analysis that involves just the average salary remains relatively unaffected by extreme values.
+
+
+
+Machine Learning:
+"Clustering Data Science Job Roles in the US Based on Salary, Experience, and Company Size Using K-means Algorithm
+
+```{r}
+filtered_data <- data %>%
+  filter(company_location == "US") %>%
+  select(salary_in_usd, experience_level, company_size, remote_ratio, job_title)  # Select relevant columns including job_title
+
+#Convert categorical variables to numeric for clustering
+filtered_data$experience_level <- as.numeric(as.factor(filtered_data$experience_level))
+filtered_data$company_size <- as.numeric(as.factor(filtered_data$company_size))
+
+# Normalize the filtered data
+preprocess_params_us <- preProcess(filtered_data[, c("salary_in_usd", "experience_level", "company_size", "remote_ratio")], method = c("center", "scale"))
+filtered_data_scaled <- predict(preprocess_params_us, filtered_data[, c("salary_in_usd", "experience_level", "company_size", "remote_ratio")])
+
+
+# Elbow method to find the optimal number of clusters
+set.seed(123)
+silhouette_scores <- function(k) {
+  km <- kmeans(filtered_data_scaled, centers = k, nstart = 10)
+  ss <- silhouette(km$cluster, dist(filtered_data_scaled))
+  mean(ss[, 3])  # Average silhouette width
+}
+
+# Compute and plot silhouette scores for a range of k values
+k_values <- 2:10  # Minimum number of clusters should be 2 for silhouette
+sil_scores <- sapply(k_values, silhouette_scores)
+
+# Plot Silhouette scores vs k
+ggplot(data.frame(k_values, sil_scores), aes(x = k_values, y = sil_scores)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Silhouette Method for Optimal k",
+       x = "Number of Clusters (k)",
+       y = "Average Silhouette Width") +
+  theme_minimal()
+```
+Our first step in this clustering model is to use the elbow method to determine the best number of clusters based on the silhouette score, ensuring that the clusters and centroids are well separated.
+
+```{r}
+set.seed(123)
+kmeans_model <- kmeans(filtered_data_scaled, centers = 4, nstart = 10)
+
+# Step 6: Add the original (unscaled) salary values back to the data for plotting
+filtered_data$cluster <- as.factor(kmeans_model$cluster)  # Add cluster labels to the original unscaled data
+
+# Step 7: Plot the clusters using the unscaled salary values
+ggplot(filtered_data, aes(x = mean(salary_in_usd), y = experience_level, color = cluster)) +
+  geom_point() +
+  labs(title = "K-means Clustering with 4 Clusters (US Data)",
+       x = "Salary (USD)",
+       y = "Experience Level") + 
+  scale_x_continuous(labels = scales::comma) +  # Format salary with commas
+  theme_minimal()
+
+```
+Bassed on the clustering results, we can interpret the four clusters as follows:
+
+Cluster 1 (Mid-Level Roles): This cluster, represented in red, spans a wide range of salaries but is concentrated around the middle range of salaries. These roles are distributed across multiple experience levels but mostly fall under levels 3 (mid-level) and 4 (senior-level). This suggests that mid-level roles are more common and encompass a broader salary range.
+
+Cluster 2 (Entry-Level Roles): Represented in green, this cluster primarily contains entry-level positions with lower salaries. The concentration of this cluster is mainly within experience level 1, which aligns with early-career job roles and typically offers the lowest salary range in the dataset.
+
+Cluster 3 (Senior and Executive Roles): Shown in blue, this cluster focuses on higher salaries and is concentrated in experience levels 3 and 4. These roles reflect senior and executive-level positions, which offer more competitive salaries, especially in larger companies.
+
+Cluster 4 (High-Paying Executive Roles): Represented in purple, this cluster consists of the highest-paying executive roles, with salaries extending far beyond $200,000. These positions are exclusively within the senior-most experience levels (level 4), which aligns with top-tier executives and high-paying roles within the data science industry.
+
+This analysis shows that the clusters successfully group job roles based on salary and experience level, highlighting distinct career stages, from entry-level to high-paying executive positions.
+
+```{r}
+# Group by cluster and job title to see the distribution of jobs in each cluster
+job_title_by_cluster <- filtered_data %>%
+  group_by(cluster, job_title) %>%
+  summarise(job_count = n()) %>%
+  arrange(desc(job_count))
+
+#Relabel the clusters based on their characteristics (e.g., salary, experience level, job titles)
+filtered_data <- filtered_data %>%
+  mutate(cluster_label = recode(cluster,
+                                '1' = "Mid-Level Roles",
+                                '2' = "Entry-Level Roles",
+                                '3' = "Senior and Executive Roles",
+                                '4' = "High-Paying Executive Roles"))
+
+#Group the job titles with the new cluster labels and print
+job_title_by_cluster_with_labels <- filtered_data %>%
+  group_by(cluster_label, job_title) %>%
+  summarise(job_count = n()) %>%
+  arrange(desc(job_count))
+
+#Print the job titles with their new cluster labels and counts
+print(job_title_by_cluster_with_labels)
+
+
+```
+This table presents the distribution of job titles across the different clusters based on their characteristics, such as salary and experience level. Mid-Level Roles have the highest job counts, with Data Engineer, Data Scientist, and Machine Learning Engineer being the most common roles. These roles reflect the industry's demand for professionals at the mid-level, who have a wide range of responsibilities in core data science functions.
+
+In the High-Paying Executive Roles cluster, job titles like Data Scientist, Data Engineer, and Machine Learning Engineer appear again, but with significantly fewer job counts. These roles demand higher experience and offer the highest salaries, indicating their niche yet critical role in senior leadership and strategic decision-making. Entry-Level Roles show Data Analyst as a common starting point for professionals breaking into the industry, reflecting how these roles are foundational for building future data science careers.
+
+This clustering helps to clarify the career stages across the data science industry, providing a detailed view of how job roles are distributed based on salary and experience.
+
+
+```{r}
+#Group by cluster label and job title to see the distribution of jobs in each cluster
+job_title_by_cluster <- filtered_data %>%
+  group_by(cluster_label, job_title) %>%
+  summarise(job_count = n()) %>%
+  arrange(desc(job_count))
+
+#Select the top 3 job roles for each cluster
+top_3_jobs_by_cluster <- job_title_by_cluster %>%
+  group_by(cluster_label) %>%
+  slice_max(order_by = job_count, n = 3)  # Select top 3 job roles based on job_count
+
+#Plot the top 3 job roles for each cluster
+ggplot(top_3_jobs_by_cluster, aes(x = reorder(job_title, job_count), y = job_count, fill = cluster_label)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_wrap(~cluster_label, scales = "free_y") +
+  labs(title = "Top 3 Job Roles in US for Each Cluster",
+       x = "Job Title",
+       y = "Job Count") +
+  theme_minimal()
+```
+To better visualize the distribution of job roles across different career stages, we categorized them into four clusters using K-means: Mid-Level Roles, Entry-Level Roles, Senior and Executive Roles, and High-Paying Executive Roles. In the Mid-Level Roles cluster, the most common job titles are Data Engineer, Data Scientist, and Data Analyst, showing that these positions dominate the data science field at this level, with job counts ranging from 926 to 1,705. For Entry-Level Roles, Data Analyst is the most frequent, reflecting the entry point for many professionals starting their data science careers.
+
+In the Senior and Executive Roles cluster, the focus shifts toward more specialized positions, such as Data Engineer and Applied Scientist, which typically require a higher level of expertise and experience. Lastly, High-Paying Executive Roles feature Data Scientist, Data Engineer, and Data Analyst as the most common titles, but with fewer job openings compared to mid-level roles, reflecting their niche but high-value nature. This distribution highlights how different job roles evolve across experience levels and compensation bands within the data science industry.
+
